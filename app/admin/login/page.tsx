@@ -32,22 +32,35 @@ export default function AdminLoginPage() {
     setLoading(true)
     try {
       const supabase = createClient()
-      const { error, data: authData } = await supabase.auth.signInWithPassword({
+      const { error: signInError, data: authData } = await supabase.auth.signInWithPassword({
         email: data.email,
         password: data.password,
       })
 
-      if (error) {
-        toast.error(error.message)
+      if (signInError) {
+        toast.error(signInError.message)
         return
       }
 
-      // Check admin role
-      const { data: profile } = await supabase
+      if (!authData.user) {
+        toast.error('Login failed: No user data returned.')
+        return
+      }
+
+      // Check admin role and capture any database errors
+      const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('role')
         .eq('id', authData.user.id)
         .single()
+
+      // Log the error to your browser console to see exactly what Supabase is complaining about
+      if (profileError) {
+        console.error('Profile Fetch Error:', profileError)
+        toast.error(`Profile Error: ${profileError.message}`)
+        await supabase.auth.signOut()
+        return
+      }
 
       if (!profile || profile.role !== 'admin') {
         await supabase.auth.signOut()
@@ -57,8 +70,9 @@ export default function AdminLoginPage() {
 
       toast.success('Welcome back, Admin!')
       router.push('/admin/dashboard')
-    } catch {
-      toast.error('Something went wrong. Please try again.')
+    } catch (error: any) {
+      console.error('Unexpected Catch Error:', error)
+      toast.error(error?.message || 'Something went wrong. Please try again.')
     } finally {
       setLoading(false)
     }

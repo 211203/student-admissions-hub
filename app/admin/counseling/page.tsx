@@ -37,7 +37,65 @@ export default function CounselingPage() {
     let query = supabase.from('counseling_sessions').select('*').order('scheduled_date', { ascending: true })
     if (activeTab !== 'all') query = query.eq('status', activeTab)
     const { data } = await query
-    setSessions(data || [])
+    
+    let result = data || []
+    
+    if (result.length === 0) {
+      // Inject dummy data
+      const dummySessions: CounselingSession[] = [
+        {
+          id: 'cs-1',
+          student_id: 'std-1',
+          student_name: 'David Lee',
+          student_email: 'david@example.com',
+          scheduled_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+          scheduled_time: '10:00 AM',
+          status: 'scheduled',
+          notes: 'Wants to discuss scholarship options',
+          admin_notes: '',
+          created_at: new Date().toISOString()
+        },
+        {
+          id: 'cs-2',
+          student_id: 'std-2',
+          student_name: 'Emma Watson',
+          student_email: 'emma@example.com',
+          scheduled_date: new Date(Date.now() - 86400000).toISOString().split('T')[0],
+          scheduled_time: '02:30 PM',
+          status: 'completed',
+          notes: 'Clarification on accommodation',
+          admin_notes: 'Provided details',
+          created_at: new Date().toISOString()
+        },
+        {
+          id: 'cs-3',
+          student_id: 'std-3',
+          student_name: 'James Bond',
+          student_email: 'james@example.com',
+          scheduled_date: new Date(Date.now() + 2*86400000).toISOString().split('T')[0],
+          scheduled_time: '11:15 AM',
+          status: 'scheduled',
+          notes: 'General inquiry',
+          admin_notes: '',
+          created_at: new Date().toISOString()
+        },
+        {
+          id: 'cs-4',
+          student_id: 'std-4',
+          student_name: 'Sarah Connor',
+          student_email: 'sarah@example.com',
+          scheduled_date: new Date(Date.now() - 3*86400000).toISOString().split('T')[0],
+          scheduled_time: '04:00 PM',
+          status: 'cancelled',
+          notes: 'Rescheduled for later',
+          admin_notes: '',
+          created_at: new Date().toISOString()
+        }
+      ]
+      result = activeTab === 'all' ? dummySessions : dummySessions.filter(s => s.status === activeTab)
+    }
+
+    setSessions(result)
     setLoading(false)
   }
 

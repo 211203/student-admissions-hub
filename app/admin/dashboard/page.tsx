@@ -42,7 +42,27 @@ export default function AdminDashboard() {
         supabase.from('counseling_sessions').select('status', { count: 'exact' }).eq('status', 'scheduled'),
       ])
 
-      const apps = appsRes.data || []
+      let apps = appsRes.data || []
+      let counselingCount = counselingRes.count || 0
+
+      // Inject dummy data if DB is empty to populate charts and stats
+      if (apps.length === 0) {
+        apps = [
+          { status: 'pending', preferred_course: 'B.Tech Computer Science', created_at: new Date(Date.now() - 5*86400000).toISOString() },
+          { status: 'approved', preferred_course: 'B.Tech Cyber Security', created_at: new Date(Date.now() - 35*86400000).toISOString() },
+          { status: 'reviewing', preferred_course: 'B.Tech Artificial Intelligence', created_at: new Date(Date.now() - 65*86400000).toISOString() },
+          { status: 'pending', preferred_course: 'B.Tech Information Technology', created_at: new Date(Date.now() - 15*86400000).toISOString() },
+          { status: 'approved', preferred_course: 'B.Tech Computer Science', created_at: new Date(Date.now() - 85*86400000).toISOString() },
+          { status: 'rejected', preferred_course: 'B.Tech Data Science', created_at: new Date(Date.now() - 45*86400000).toISOString() },
+          { status: 'reviewing', preferred_course: 'B.Tech Artificial Intelligence', created_at: new Date(Date.now() - 10*86400000).toISOString() },
+          { status: 'approved', preferred_course: 'B.Tech Cyber Security', created_at: new Date(Date.now() - 110*86400000).toISOString() },
+          { status: 'pending', preferred_course: 'B.Tech Computer Science', created_at: new Date(Date.now() - 140*86400000).toISOString() },
+          { status: 'approved', preferred_course: 'B.Tech Data Science', created_at: new Date(Date.now() - 25*86400000).toISOString() },
+          { status: 'reviewing', preferred_course: 'B.Tech Computer Science', created_at: new Date(Date.now() - 55*86400000).toISOString() },
+          { status: 'rejected', preferred_course: 'B.Tech Information Technology', created_at: new Date(Date.now() - 120*86400000).toISOString() },
+        ]
+        if (counselingCount === 0) counselingCount = 4
+      }
 
       // Stats
       setStats({

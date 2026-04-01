@@ -9,18 +9,20 @@ import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { Input, Select } from '@/components/ui/Input'
 import { formatDate, COURSES } from '@/lib/utils'
-import { Users, Search, ChevronRight, SlidersHorizontal } from 'lucide-react'
+import { Users, Search, ChevronRight, SlidersHorizontal, Mail } from 'lucide-react'
 
 interface Application {
   id: string
   student_id: string
   full_name: string
+  email: string
   preferred_course: string
   academic_background: string
   entrance_exam_score: number
   budget_range: string
   status: string
   created_at: string
+  updated_at: string
 }
 
 const STATUS_OPTIONS = [
@@ -31,6 +33,60 @@ const STATUS_OPTIONS = [
 ]
 
 const PAGE_SIZE = 10
+
+const needsFollowUp = (lastDateString: string | null) => {
+  if (!lastDateString) return true;
+  
+  const lastDate = new Date(lastDateString);
+  const today = new Date();
+  
+  const diffTime = Math.abs(today.getTime() - lastDate.getTime());
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  
+  return diffDays >= 14;
+}
+
+const DUMMY_STUDENTS: Application[] = [
+  {
+    id: 'dummy-1',
+    student_id: 'std-1',
+    full_name: 'Alice Johnson',
+    email: 'alice@example.com',
+    preferred_course: 'B.Tech Computer Science',
+    academic_background: 'High School Diploma with 92% in PCM',
+    entrance_exam_score: 95,
+    budget_range: '$20,000 - $30,000',
+    status: 'pending',
+    created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+    updated_at: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(), // 15 days ago -> needs follow-up
+  },
+  {
+    id: 'dummy-2',
+    student_id: 'std-2',
+    full_name: 'Bob Smith',
+    email: 'bob@example.com',
+    preferred_course: 'B.Tech Information Technology',
+    academic_background: 'Intermediate with 85%',
+    entrance_exam_score: 82,
+    budget_range: '$10,000 - $20,000',
+    status: 'reviewing',
+    created_at: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+    updated_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), // 2 days ago -> recently contacted
+  },
+  {
+    id: 'dummy-3',
+    student_id: 'std-3',
+    full_name: 'Charlie Davis',
+    email: 'charlie@example.com',
+    preferred_course: 'B.Tech Electronics',
+    academic_background: 'A-Levels in Physics, Math',
+    entrance_exam_score: 88,
+    budget_range: '$15,000 - $25,000',
+    status: 'approved',
+    created_at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    updated_at: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString(), // 28 days ago -> needs follow-up
+  }
+]
 
 export default function StudentsPage() {
   const router = useRouter()
@@ -61,8 +117,20 @@ export default function StudentsPage() {
     if (statusFilter) query = query.eq('status', statusFilter)
 
     const { data, count } = await query
-    setApplications(data || [])
-    setTotal(count || 0)
+
+    if (!data || data.length === 0) {
+      // Use dummy data if database is empty so frontend UI can be tested
+      let filteredDummy = [...DUMMY_STUDENTS]
+      if (search) filteredDummy = filteredDummy.filter(s => s.full_name.toLowerCase().includes(search.toLowerCase()))
+      if (courseFilter) filteredDummy = filteredDummy.filter(s => s.preferred_course === courseFilter)
+      if (statusFilter) filteredDummy = filteredDummy.filter(s => s.status === statusFilter)
+      
+      setApplications(filteredDummy)
+      setTotal(filteredDummy.length)
+    } else {
+      setApplications(data)
+      setTotal(count || 0)
+    }
     setLoading(false)
   }
 
@@ -93,6 +161,7 @@ export default function StudentsPage() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
             <input
+              suppressHydrationWarning
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(0) }}
               placeholder="Search by name..."
@@ -126,7 +195,7 @@ export default function StudentsPage() {
           <table className="w-full">
             <thead className="bg-slate-700/50">
               <tr>
-                {['Student Name', 'Preferred Course', 'Academic Background', 'Exam Score', 'Budget', 'Status', 'Applied', ''].map(col => (
+                {['Student Name', 'Preferred Course', 'Academic Background', 'Exam Score', 'Budget', 'Status', 'Applied', 'Follow-up', ''].map(col => (
                   <th key={col} className="text-left px-5 py-3.5 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">{col}</th>
                 ))}
               </tr>
@@ -134,13 +203,13 @@ export default function StudentsPage() {
             <tbody className="divide-y divide-slate-700/50">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center">
+                  <td colSpan={9} className="py-16 text-center">
                     <Spinner />
                   </td>
                 </tr>
               ) : applications.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-400">
+                  <td colSpan={9} className="py-16 text-center text-slate-400">
                     No applications found
                   </td>
                 </tr>
@@ -180,6 +249,26 @@ export default function StudentsPage() {
                     </td>
                     <td className="px-5 py-4">
                       <span className="text-slate-400 text-xs whitespace-nowrap">{formatDate(app.created_at)}</span>
+                    </td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      {needsFollowUp(app.updated_at) ? (
+                        <Button 
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            window.location.href = `mailto:${app.email}?subject=Checking in on your application`
+                          }}
+                          className="bg-amber-600/20 text-amber-500 hover:bg-amber-600/30 hover:text-amber-400 text-xs px-3 py-1 flex items-center gap-2 border border-amber-600/30"
+                        >
+                          <Mail className="w-3 h-3" />
+                          Send Follow-up
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-slate-500 px-3 py-1 flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                          Recently Contacted
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-4">
                       <ChevronRight className="h-4 w-4 text-slate-600" />

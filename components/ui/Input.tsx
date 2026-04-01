@@ -60,6 +60,7 @@ export function Select({ label, error, options, className, ...props }: SelectPro
         </label>
       )}
       <select
+        suppressHydrationWarning
         className={cn(
           'w-full bg-slate-800/80 border border-slate-600 rounded-xl px-4 py-2.5 text-white',
           'focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent',
