@@ -108,7 +108,7 @@ export default function StudentDetailPage() {
   const sendEmail = async () => {
     setUpdating('email')
     try {
-      await fetch(process.env.NEXT_PUBLIC_N8N_EMAIL_WEBHOOK!, {
+      await fetch('/api/webhook/email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -162,8 +162,7 @@ export default function StudentDetailPage() {
         })
       )
 
-      const webhookUrl = process.env.NEXT_PUBLIC_N8N_DOCUMENT_WEBHOOK_URL || '/api/extract-documents'
-      const response = await fetch(webhookUrl, {
+      const response = await fetch('/api/webhook/documents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

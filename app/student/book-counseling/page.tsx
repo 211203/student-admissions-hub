@@ -66,7 +66,7 @@ export default function BookCounselingPage() {
 
       // Send to n8n webhook
       try {
-        await fetch(process.env.NEXT_PUBLIC_N8N_COUNSELING_WEBHOOK!, {
+        await fetch('/api/webhook/counseling', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...payload, timestamp: new Date().toISOString() }),

@@ -6,7 +6,7 @@ import { useAuth } from '@/lib/hooks/useAuth'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
-import { formatDate } from '@/lib/utils'
+import { formatDate, getDocumentTypesForStream } from '@/lib/utils'
 import {
   FileText, Upload, MessageSquare, CalendarDays,
   Bell, ChevronRight, TrendingUp, Clock
@@ -14,8 +14,9 @@ import {
 import Link from 'next/link'
 
 interface DashboardData {
-  application: { status: string; preferred_course: string; created_at: string } | null
+  application: { status: string; preferred_course: string; created_at: string; academic_stream?: string | null } | null
   documentsCount: number
+  requiredDocumentsCount: number
   counselingSession: { scheduled_date: string; scheduled_time: string; status: string } | null
   notifications: { id: string; message: string; read: boolean; created_at: string }[]
   unreadCount: number
@@ -32,16 +33,29 @@ export default function StudentDashboard() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      const [applicationRes, docsRes, counselingRes, notifRes] = await Promise.all([
-        supabase.from('applications').select('status, preferred_course, created_at').eq('student_id', user.id).order('created_at', { ascending: false }).limit(1).single(),
-        supabase.from('documents').select('id', { count: 'exact' }).eq('student_id', user.id),
+      const [applicationRes, storageRes, counselingRes, notifRes] = await Promise.all([
+        supabase.from('applications').select('status, preferred_course, created_at, academic_stream').eq('student_id', user.id).order('created_at', { ascending: false }).limit(1).single(),
+        fetch('/api/storage/list', { cache: 'no-store' }),
         supabase.from('counseling_sessions').select('scheduled_date, scheduled_time, status').eq('student_id', user.id).eq('status', 'scheduled').order('scheduled_date', { ascending: true }).limit(1).single(),
         supabase.from('notifications').select('*').eq('student_id', user.id).order('created_at', { ascending: false }).limit(5),
       ])
 
+      const storageJson = storageRes.ok
+        ? ((await storageRes.json()) as { documents?: { document_type: string }[] })
+        : { documents: [] }
+
+      const objects = storageJson.documents || []
+      const uploadedTypes = new Set(objects.map((o) => o.document_type))
+
+      const stream = applicationRes.data?.academic_stream || 'PCM'
+      const requiredDocIds = getDocumentTypesForStream(stream).filter((d) => d.required).map((d) => d.id)
+      const requiredDocumentsCount = requiredDocIds.length
+      const uploadedRequiredCount = requiredDocIds.filter((id) => uploadedTypes.has(id)).length
+
       setData({
         application: applicationRes.data,
-        documentsCount: docsRes.count || 0,
+        documentsCount: uploadedRequiredCount,
+        requiredDocumentsCount,
         counselingSession: counselingRes.data,
         notifications: notifRes.data || [],
         unreadCount: (notifRes.data || []).filter((n: { read: boolean }) => !n.read).length,
@@ -134,12 +148,17 @@ export default function StudentDashboard() {
             <div className="w-10 h-10 bg-blue-500/20 rounded-xl flex items-center justify-center">
               <Upload className="h-5 w-5 text-blue-400" />
             </div>
-            <span className="text-2xl font-bold text-white">{data?.documentsCount || 0}<span className="text-slate-500 text-base font-normal">/5</span></span>
+            <span className="text-2xl font-bold text-white">
+              {data?.documentsCount || 0}
+              <span className="text-slate-500 text-base font-normal">/{data?.requiredDocumentsCount || 0}</span>
+            </span>
           </div>
           <div>
             <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">Documents Uploaded</p>
             <p className="text-white font-semibold mt-0.5">
-              {data?.documentsCount === 5 ? 'All documents submitted' : `${5 - (data?.documentsCount || 0)} remaining`}
+              {data?.requiredDocumentsCount && data?.documentsCount === data.requiredDocumentsCount
+                ? 'All documents submitted'
+                : `${Math.max(0, (data?.requiredDocumentsCount || 0) - (data?.documentsCount || 0))} remaining`}
             </p>
           </div>
         </Card>

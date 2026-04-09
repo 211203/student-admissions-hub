@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -40,22 +39,20 @@ interface PendingApplication {
 }
 
 export default function DocumentsPage() {
-  const router = useRouter()
   const [documents, setDocuments] = useState<UploadedDoc[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedFiles, setSelectedFiles] = useState<Record<string, File>>({})
   const [uploading, setUploading] = useState(false)
   const [extracting, setExtracting] = useState(false)
-  const [hasApplication, setHasApplication] = useState<boolean | null>(null)
   const [academicStream, setAcademicStream] = useState<string | null>(null)
   const [pendingApplication, setPendingApplication] = useState<PendingApplication | null>(null)
 
   const docTypes = getDocumentTypesForStream(academicStream)
 
-  const withTimeout = async <T,>(promise: Promise<T>, ms: number): Promise<T> => {
+  const withTimeout = async <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
     let timeoutId: ReturnType<typeof setTimeout> | null = null
     const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('timeout')), ms)
+      timeoutId = setTimeout(() => reject(new Error(`timeout:${label}`)), ms)
     })
     try {
       return await Promise.race([promise, timeoutPromise])
@@ -64,63 +61,38 @@ export default function DocumentsPage() {
     }
   }
 
+
   const fetchDocuments = useCallback(async () => {
     setLoading(true)
     try {
+      const supabase = createClient()
       // First check for pending application in sessionStorage
       const pendingData = sessionStorage.getItem('pendingApplication')
       if (pendingData) {
         try {
           const parsed = JSON.parse(pendingData) as PendingApplication
           setPendingApplication(parsed)
-          setHasApplication(true)
           setAcademicStream(parsed.academic_stream || 'PCM')
-          setDocuments([])
-          return
+          // Continue loading uploaded documents from server;
+          // do not return early, otherwise uploaded state never reflects in UI.
         } catch {
           // ignore parse errors
         }
       }
 
       // Fallback: check Supabase for existing application
-      const supabase = createClient()
-      const { data: { user } } = await withTimeout(supabase.auth.getUser(), 8000)
+      const { data: { user } } = await withTimeout(supabase.auth.getUser(), 15000, 'auth getUser')
       if (!user) {
-        setHasApplication(false)
         setDocuments([])
         return
       }
 
-      const { data: appData } = await withTimeout(
-        supabase
-          .from('applications')
-          .select('academic_stream')
-          .eq('student_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        10000
-      )
-
-      if (!appData) {
-        setHasApplication(false)
-        setDocuments([])
-        return
+      const listRes = await withTimeout(fetch('/api/storage/list', { cache: 'no-store' }), 20000, 'storage list')
+      if (!listRes.ok) {
+        throw new Error(await listRes.text())
       }
-
-      setHasApplication(true)
-      setAcademicStream(appData.academic_stream || 'PCM')
-
-      const { data } = await withTimeout(
-        supabase
-          .from('documents')
-          .select('*')
-          .eq('student_id', user.id)
-          .order('uploaded_at', { ascending: false }),
-        10000
-      )
-
-      setDocuments(data || [])
+      const listJson = (await listRes.json()) as { documents: UploadedDoc[] }
+      setDocuments(listJson.documents || [])
     } catch {
       // If we have pending application, use that
       const pendingData = sessionStorage.getItem('pendingApplication')
@@ -128,15 +100,12 @@ export default function DocumentsPage() {
         try {
           const parsed = JSON.parse(pendingData) as PendingApplication
           setPendingApplication(parsed)
-          setHasApplication(true)
           setAcademicStream(parsed.academic_stream || 'PCM')
-          setDocuments([])
           return
         } catch {
           // ignore
         }
       }
-      setHasApplication(false)
       setDocuments([])
       toast.error('Unable to load documents right now. Please try again.')
     } finally {
@@ -172,121 +141,184 @@ export default function DocumentsPage() {
     try {
       // Get student ID from pending application or try to get user
       let studentId = pendingApplication?.student_id
-      let studentName = pendingApplication?.student_name || 'Unknown'
+      let studentName = pendingApplication?.student_name || ''
       let studentEmail = pendingApplication?.student_email || ''
-      let studentPhone = pendingApplication?.student_phone || 'N/A'
-      let preferredCourse = pendingApplication?.preferred_course || 'N/A'
-      let streamValue = pendingApplication?.academic_stream || academicStream || 'N/A'
-      let preferredIntakeYear = pendingApplication?.preferred_intake_year || 'N/A'
+      let studentPhone = pendingApplication?.student_phone || ''
+      let preferredCourse = pendingApplication?.preferred_course || ''
+      let streamValue = pendingApplication?.academic_stream || academicStream || 'PCM'
+      let preferredIntakeYear = pendingApplication?.preferred_intake_year || ''
       let questions = pendingApplication?.questions || ''
 
       const supabase = createClient()
       
       // If no pending application, try to get user from Supabase
       if (!studentId) {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (!user) { 
+        const { data: { user } } = await withTimeout(supabase.auth.getUser(), 15000, 'auth getUser')
+        if (!user) {
           toast.error('Please login first')
           setUploading(false)
-          return 
+          return
         }
         studentId = user.id
         studentEmail = user.email || ''
       }
 
+      // If the student didn't just apply in this session, fetch latest application data
+      // so we don't send placeholders like "N/A" to the webhook (DB has check constraints).
+      let hasApplicationDetails = Boolean(pendingApplication)
+      if (!pendingApplication && studentId) {
+        try {
+          const appRes = await withTimeout(
+            supabase
+              .from('applications')
+              .select('full_name, email, phone, preferred_course, academic_stream, preferred_intake_year, questions')
+              .eq('student_id', studentId)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+            15000,
+            'fetch application'
+          )
+
+          if (appRes.data) {
+            hasApplicationDetails = true
+            studentName = appRes.data.full_name || studentName
+            studentEmail = appRes.data.email || studentEmail
+            studentPhone = appRes.data.phone || studentPhone
+            preferredCourse = appRes.data.preferred_course || preferredCourse
+            streamValue = appRes.data.academic_stream || streamValue
+            preferredIntakeYear = appRes.data.preferred_intake_year || preferredIntakeYear
+            questions = appRes.data.questions || questions
+          }
+        } catch {
+          // ignore (we can still upload; webhook may be skipped)
+        }
+      }
+
+      // Normalize stream to allowed values (prevents DB CHECK constraint violations)
+      streamValue = (streamValue === 'PCM' || streamValue === 'PCB' || streamValue === 'PCMB') ? streamValue : 'PCM'
+
+      const existingDocTypes = new Set(documents.map((d) => d.document_type))
+
       console.log('[upload] Starting upload for', filesToUpload.length, 'files')
       console.log('[upload] Student ID:', studentId)
 
+      // NOTE: We do not write to student_profiles/documents tables here.
+      // This avoids RLS/FK timeouts and keeps the flow focused on Storage + webhook.
+
       // Upload files to Supabase storage and collect metadata
       const uploadedDocs: { docType: string; filePath: string; fileName: string; signedUrl: string }[] = []
+      const docsForWebhook: { docType: string; filePath: string; fileName: string; signedUrl: string }[] = []
 
       for (const [docType, file] of filesToUpload) {
-        const fileExt = file.name.split('.').pop()
-        const filePath = `${studentId}/${docType}_${Date.now()}.${fileExt}`
+        const fileExt = file.name.split('.').pop() || 'bin'
+        const filePath = `${studentId}/${docType}.${fileExt}`
 
         console.log('[upload] Uploading:', docType, '->', filePath, 'size:', file.size)
 
-        const { error: uploadError, data: uploadData } = await supabase.storage
-          .from(STUDENT_DOCUMENTS_BUCKET)
-          .upload(filePath, file, { upsert: true })
+        const formData = new FormData()
+        formData.set('docType', docType)
+        formData.set('file', file)
+        formData.set('studentName', studentName)
+        formData.set('studentEmail', studentEmail)
 
-        if (uploadError) {
-          console.error('[upload] Storage upload error:', uploadError)
-          toast.error(`Upload failed: ${uploadError.message}`)
-          throw uploadError
+        const uploadRes = await withTimeout(
+          fetch('/api/storage/upload', { method: 'POST', body: formData }),
+          90000,
+          `storage upload (${docType})`
+        )
+
+        console.log('[upload] Upload finished for', docType)
+
+        if (!uploadRes.ok) {
+          const errText = await uploadRes.text()
+          console.error('[upload] Storage upload error:', errText)
+          throw new Error(errText || `Upload failed for ${docType}`)
         }
 
-        console.log('[upload] Upload success:', uploadData)
-
-        // Get signed URL (valid for 1 hour)
-        const { data: signedUrlData, error: signedUrlError } = await supabase.storage
-          .from(STUDENT_DOCUMENTS_BUCKET)
-          .createSignedUrl(filePath, 3600)
-
-        if (signedUrlError) {
-          console.error('Signed URL error:', signedUrlError)
+        const uploadJson = (await uploadRes.json()) as {
+          docType: string
+          filePath: string
+          fileName: string
+          signedUrl: string
         }
 
-        // Remove any existing doc of same type and save new record
-        await supabase.from('documents').delete().eq('student_id', studentId).eq('document_type', docType)
-        
-        const { error: dbError } = await supabase.from('documents').insert({
-          student_id: studentId,
-          document_type: docType,
-          file_name: file.name,
-          file_path: filePath,
-          file_size: file.size,
-        })
-
-        if (dbError) {
-          console.error('[upload] DB insert error:', dbError)
+        const meta = {
+          docType: uploadJson.docType,
+          filePath: uploadJson.filePath,
+          fileName: uploadJson.fileName,
+          signedUrl: uploadJson.signedUrl,
         }
 
-        uploadedDocs.push({
-          docType,
-          filePath,
-          fileName: file.name,
-          signedUrl: signedUrlData?.signedUrl || '',
-        })
+        uploadedDocs.push(meta)
+
+        // Only trigger webhook for *new* document types (skip replacements)
+        if (!existingDocTypes.has(meta.docType)) {
+          docsForWebhook.push(meta)
+          existingDocTypes.add(meta.docType)
+        }
       }
 
       toast.success(`${uploadedDocs.length} document(s) uploaded successfully!`)
 
+      // Reflect uploaded state immediately in UI, even if webhook is slow/fails
+      setSelectedFiles({})
+      try {
+        await fetchDocuments()
+      } catch {
+        // keep UI responsive even if refresh fails
+      }
+
+      // Skip webhook for replacements (only process newly-added document types)
+      if (docsForWebhook.length === 0) {
+        toast.success('Documents updated successfully!')
+        return
+      }
+
+      // If we don't have application details yet, don't trigger processing.
+      // Otherwise n8n may try to create an invalid applications row (CHECK constraint).
+      if (!hasApplicationDetails) {
+        toast.success('Documents uploaded. Please submit your application to start processing.')
+        return
+      }
+
       // Send to n8n webhook with signed URLs
       setExtracting(true)
-      
-      const webhookUrl = process.env.NEXT_PUBLIC_N8N_DOCUMENT_WEBHOOK_URL || '/api/extract-documents'
+
+      const webhookUrl = '/api/webhook/documents'
       console.log('[upload] Sending to webhook:', webhookUrl)
 
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 30000)
-
-      const webhookResponse = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentId,
-          studentName,
-          studentEmail,
-          studentPhone,
-          preferredCourse,
-          academicStream: streamValue,
-          preferredIntakeYear,
-          questions,
-          documents: uploadedDocs,
-          timestamp: new Date().toISOString(),
+      const webhookResponse = await withTimeout(
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            studentId,
+            studentName,
+            studentEmail,
+            studentPhone,
+            preferredCourse,
+            academicStream: streamValue,
+            preferredIntakeYear,
+            questions,
+            documents: docsForWebhook,
+            timestamp: new Date().toISOString(),
+          }),
         }),
-        signal: controller.signal,
-      })
+        305000,
+        'webhook call'
+      )
 
-      clearTimeout(timeoutId)
       console.log('[upload] Webhook response status:', webhookResponse.status)
 
       if (webhookResponse.ok) {
         toast.success('Documents sent for processing!')
         sessionStorage.removeItem('pendingApplication')
-        setSelectedFiles({})
-        router.push('/student/dashboard')
+        try {
+          await fetchDocuments()
+        } catch {
+          // keep UI responsive even if refresh fails
+        }
       } else {
         const errorText = await webhookResponse.text()
         console.error('[upload] Webhook error:', errorText)
@@ -294,11 +326,21 @@ export default function DocumentsPage() {
       }
 
     } catch (err: unknown) {
-      console.error('[upload] Error:', err)
-      if (err instanceof Error && err.name === 'AbortError') {
+      const msg = err instanceof Error ? err.message : ''
+      const isAbort = err instanceof Error && err.name === 'AbortError'
+      const isTimeout = msg.startsWith('timeout:')
+
+      // Avoid console.error for expected timeout/abort cases (Next shows scary overlays)
+      if (!isAbort && !isTimeout) {
+        console.error('[upload] Error:', err)
+      }
+
+      if (isAbort) {
         toast.error('Request timed out. Please try again.')
+      } else if (isTimeout) {
+        toast.error(`Timed out: ${msg.replace('timeout:', '')}`)
       } else {
-        toast.error('Submission failed. Please try again.')
+        toast.error(msg || 'Submission failed. Please try again.')
       }
     } finally {
       setUploading(false)
@@ -306,11 +348,16 @@ export default function DocumentsPage() {
     }
   }
 
-  const handleDelete = async (docId: string, filePath: string) => {
+  const handleDelete = async (_docId: string, filePath: string) => {
     try {
-      const supabase = createClient()
-      await supabase.storage.from(STUDENT_DOCUMENTS_BUCKET).remove([filePath])
-      await supabase.from('documents').delete().eq('id', docId)
+      const res = await fetch('/api/storage/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePaths: [filePath] }),
+      })
+      if (!res.ok) {
+        throw new Error(await res.text())
+      }
       toast.success('Document removed')
       fetchDocuments()
     } catch {
@@ -326,28 +373,6 @@ export default function DocumentsPage() {
 
   const getDocsForCategory = (categoryId: string) =>
     docTypes.filter(dt => dt.category === categoryId)
-
-  if (hasApplication === false) {
-    return (
-      <div className="max-w-3xl mx-auto space-y-8">
-        <Card className="border-amber-500/30 bg-amber-500/5">
-          <div className="space-y-3">
-            <p className="text-amber-300 font-medium">Submit your application first</p>
-            <p className="text-slate-300 text-sm">
-              You can upload documents only after you submit the “Apply for Course” form.
-            </p>
-            <div className="flex gap-3">
-              <Button onClick={() => router.push('/student/apply')}>Go to Apply Form</Button>
-              <Button variant="ghost" onClick={fetchDocuments} className="gap-2">
-                <RefreshCw className="h-4 w-4" />
-                Refresh
-              </Button>
-            </div>
-          </div>
-        </Card>
-      </div>
-    )
-  }
 
   return (
     <div className="max-w-3xl mx-auto space-y-8">

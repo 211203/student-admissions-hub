@@ -156,8 +156,7 @@ export default function StudentsPage() {
       )
 
       // Call n8n webhook
-      const webhookUrl = process.env.NEXT_PUBLIC_N8N_DOCUMENT_WEBHOOK_URL || '/api/extract-documents'
-      const response = await fetch(webhookUrl, {
+      const response = await fetch('/api/webhook/documents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

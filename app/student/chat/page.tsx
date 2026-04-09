@@ -76,7 +76,7 @@ export default function ChatPage() {
       // Send to n8n webhook
       let assistantReply = "Thank you for your question! Our admission team will get back to you shortly. In the meantime, you can check \our FAQ or book a counseling session for personalized guidance."
       try {
-        const res = await fetch(process.env.NEXT_PUBLIC_N8N_CHAT_WEBHOOK!, {
+        const res = await fetch('/api/webhook/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
