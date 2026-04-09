@@ -35,7 +35,7 @@ interface Application {
 
 interface Document { id: string; document_type: string; file_name: string; file_path: string; uploaded_at: string }
 interface ChatMessage { id: string; message: string; role: string; created_at: string }
-
+//09042026 updated code
 const DOC_LABELS: Record<string, string> = {
   '10th_marksheet': '10th Marksheet',
   '12th_marksheet': '12th Marksheet',

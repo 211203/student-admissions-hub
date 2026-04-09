@@ -1,16 +1,16 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { createClient } from '@/lib/supabase/client'
 import { useAuth } from '@/lib/hooks/useAuth'
 import { Button } from '@/components/ui/Button'
 import { Input, Select, Textarea } from '@/components/ui/Input'
 import { Card } from '@/components/ui/Card'
 import { COURSES, ACADEMIC_STREAMS } from '@/lib/utils'
-import { FileText, SendHorizonal, CheckCircle, Info } from 'lucide-react'
+import { FileText, SendHorizonal, Info } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 const schema = z.object({
@@ -31,13 +31,14 @@ const INTAKE_YEARS = [
   { value: '2027', label: '2027' },
 ]
 
-
 export default function ApplyPage() {
-  const { profile } = useAuth()
-  const [submitted, setSubmitted] = useState(false)
+  const router = useRouter()
+  const { profile, user, loading: authLoading } = useAuth()
   const [loading, setLoading] = useState(false)
+  const [checkingApplication, setCheckingApplication] = useState(true)
+  const [mounted, setMounted] = useState(false)
 
-  const { register, handleSubmit, watch, formState: { errors } } = useForm<FormData>({
+  const { register, handleSubmit, watch, formState: { errors }, reset } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: {
       fullName: profile?.full_name || '',
@@ -48,6 +49,35 @@ export default function ApplyPage() {
   })
 
   const selectedStream = watch('academicStream')
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (!mounted || authLoading) return
+    
+    // Check if there's a pending application in session storage
+    const pending = sessionStorage.getItem('pendingApplication')
+    if (pending) {
+      try {
+        const data = JSON.parse(pending)
+        reset({
+          fullName: data.student_name || '',
+          email: data.student_email || '',
+          phone: data.student_phone || '',
+          preferredCourse: data.preferred_course || '',
+          academicStream: data.academic_stream || '',
+          preferredIntakeYear: data.preferred_intake_year || '',
+          questions: data.questions || '',
+        })
+      } catch {
+        // ignore parse errors
+      }
+    }
+    
+    setCheckingApplication(false)
+  }, [mounted, authLoading, reset])
 
   const getRequiredExams = (stream: string) => {
     const examMap: Record<string, string[]> = {
@@ -60,86 +90,64 @@ export default function ApplyPage() {
 
   const onSubmit = async (data: FormData) => {
     setLoading(true)
+    
     try {
-      const supabase = createClient()
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) { toast.error('Please login first'); return }
+      if (!user) { 
+        toast.error('Please login first')
+        return 
+      }
 
-      const payload = {
+      // Store form data in sessionStorage for documents page to use
+      const applicationData = {
         student_id: user.id,
-        full_name: data.fullName,
-        email: data.email,
-        phone: data.phone,
+        student_name: data.fullName,
+        student_email: data.email,
+        student_phone: data.phone || null,
         preferred_course: data.preferredCourse,
         academic_stream: data.academicStream,
-        preferred_intake_year: data.preferredIntakeYear,
-        questions: data.questions || '',
-        status: 'pending',
+        preferred_intake_year: data.preferredIntakeYear || null,
+        questions: data.questions || null,
       }
-
-      // Save to Supabase
-      const { error } = await supabase.from('applications').insert([payload])
-      if (error) {
-        console.error('[apply] Supabase insert error', {
-          message: error.message,
-          code: (error as any).code,
-          details: (error as any).details,
-          hint: (error as any).hint,
-        })
-        throw error
-      }
-
-      // Send to n8n webhook
-      try {
-        await fetch(process.env.NEXT_PUBLIC_N8N_ADMISSION_WEBHOOK!, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, timestamp: new Date().toISOString() }),
-        })
-      } catch {
-        // webhook failure is non-blocking
-      }
-
-      setSubmitted(true)
-      toast.success('Application submitted successfully!')
+      
+      sessionStorage.setItem('pendingApplication', JSON.stringify(applicationData))
+      
+      toast.success('Proceeding to document upload...')
+      router.push('/student/documents')
+      
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Something went wrong'
-      toast.error(msg)
+      console.error('[apply] Error:', err)
+      toast.error('Something went wrong. Please try again.')
     } finally {
       setLoading(false)
     }
   }
 
-  if (submitted) {
+  if (!mounted || checkingApplication) {
     return (
-      <div className="max-w-lg mx-auto mt-16 text-center space-y-6">
-        <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto">
-          <CheckCircle className="h-10 w-10 text-green-400" />
+      <div className="max-w-3xl mx-auto space-y-8">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-center">
+            <div className="w-16 h-16 border-4 border-violet-500/20 border-t-violet-500 rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-slate-400">Checking your application status...</p>
+          </div>
         </div>
-        <h1 className="text-3xl font-bold text-white">Application Submitted!</h1>
-        <p className="text-slate-400">
-          Your application has been received. Our admission team will review it and get back to you soon. You can track your status from the dashboard.
-        </p>
-        <Button onClick={() => setSubmitted(false)} variant="outline">Submit Another Application</Button>
       </div>
     )
   }
 
   return (
     <div className="max-w-3xl mx-auto space-y-8">
-      {/* Header */}
       <div className="flex items-center gap-4">
         <div className="w-12 h-12 bg-violet-500/20 rounded-2xl flex items-center justify-center">
           <FileText className="h-6 w-6 text-violet-400" />
         </div>
         <div>
           <h1 className="text-2xl font-bold text-white">Apply for Course</h1>
-          <p className="text-slate-400 text-sm">Fill in the details below to submit your application</p>
+          <p className="text-slate-400 text-sm">Fill in the details below and proceed to document upload</p>
         </div>
       </div>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-        {/* Personal Info */}
         <Card>
           <h2 className="text-lg font-semibold text-white mb-5">Personal Information</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -155,7 +163,6 @@ export default function ApplyPage() {
           </div>
         </Card>
 
-        {/* Academic Info */}
         <Card>
           <h2 className="text-lg font-semibold text-white mb-5">Academic Information</h2>
           <div className="space-y-5">
@@ -181,7 +188,7 @@ export default function ApplyPage() {
                   <p className="text-blue-400 font-medium">Required Entrance Exam Documents</p>
                   <p className="text-slate-300 mt-1">
                     Based on your {selectedStream} stream, you will need to upload:{' '}
-                    <strong className="text-white">{getRequiredExams(selectedStream).join(', ')}</strong> scorecards in the Documents section after submitting this application.
+                    <strong className="text-white">{getRequiredExams(selectedStream).join(', ')}</strong> scorecards in the next step.
                   </p>
                 </div>
               </div>
@@ -189,7 +196,6 @@ export default function ApplyPage() {
           </div>
         </Card>
 
-        {/* Questions */}
         <Card>
           <h2 className="text-lg font-semibold text-white mb-5">Additional Questions</h2>
           <Textarea
@@ -201,9 +207,14 @@ export default function ApplyPage() {
         </Card>
 
         <div className="flex justify-end gap-3">
-          <Button type="submit" loading={loading} size="lg" className="gap-2">
+          <Button
+            type="submit"
+            loading={loading}
+            size="lg"
+            className="gap-2"
+          >
             <SendHorizonal className="h-4 w-4" />
-            Submit Application
+            Continue to Documents
           </Button>
         </div>
       </form>

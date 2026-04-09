@@ -52,39 +52,77 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const supabase = createClient()
 
+  const withTimeout = async <T,>(promise: Promise<T>, ms: number): Promise<T> => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('timeout')), ms)
+    })
+    try {
+      return await Promise.race([promise, timeoutPromise])
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }
+
   const fetchProfile = async (userId: string) => {
-    // Try to get admin profile first
-    const { data: adminData } = await supabase
-      .from('admin_profiles')
-      .select('*')
-      .eq('id', userId)
-      .single()
-
-    if (adminData) {
-      // Update last_login_at for admin
-      await supabase
+    // Try to get admin profile first (ignore errors - user might not have access)
+    try {
+      const { data: adminRows, error: adminError } = await supabase
         .from('admin_profiles')
-        .update({ last_login_at: new Date().toISOString() })
+        .select('*')
         .eq('id', userId)
+        .limit(1)
 
-      return { ...adminData, role: 'admin' as const }
+      const adminData = adminRows?.[0]
+      if (adminData && !adminError) {
+        // Update last_login_at for admin
+        await supabase
+          .from('admin_profiles')
+          .update({ last_login_at: new Date().toISOString() })
+          .eq('id', userId)
+
+        return { ...adminData, role: 'admin' as const }
+      }
+    } catch (e) {
+      // Ignore - user is not an admin
     }
 
     // Try student profile
-    const { data: studentData } = await supabase
-      .from('student_profiles')
-      .select('*')
-      .eq('id', userId)
-      .single()
-
-    if (studentData) {
-      // Update last_login_at for student
-      await supabase
+    try {
+      const { data: studentRows, error: studentError } = await supabase
         .from('student_profiles')
-        .update({ last_login_at: new Date().toISOString() })
+        .select('*')
         .eq('id', userId)
+        .limit(1)
 
-      return { ...studentData, role: 'student' as const }
+      const studentData = studentRows?.[0]
+      if (studentData && !studentError) {
+        // Update last_login_at for student
+        await supabase
+          .from('student_profiles')
+          .update({ last_login_at: new Date().toISOString() })
+          .eq('id', userId)
+
+        return { ...studentData, role: 'student' as const }
+      }
+    } catch (e) {
+      // Ignore
+    }
+
+    // Try generic profiles table as fallback
+    try {
+      const { data: profileRows } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .limit(1)
+
+      const profileData = profileRows?.[0]
+      if (profileData) {
+        return { ...profileData, role: 'student' as const }
+      }
+    } catch (e) {
+      // Ignore
     }
 
     return null
@@ -92,13 +130,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const getUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      setUser(user)
-      if (user) {
-        const profileData = await fetchProfile(user.id)
-        setProfile(profileData)
+      try {
+        const { data: { user } } = await withTimeout(supabase.auth.getUser(), 8000)
+        setUser(user)
+        if (user) {
+          const profileData = await fetchProfile(user.id)
+          setProfile(profileData)
+        }
+      } catch {
+        setUser(null)
+        setProfile(null)
+      } finally {
+        setLoading(false)
       }
-      setLoading(false)
     }
 
     getUser()
