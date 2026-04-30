@@ -14,7 +14,7 @@ import {
 import Link from 'next/link'
 
 interface DashboardData {
-  application: { status: string; preferred_course: string; created_at: string; academic_stream?: string | null } | null
+  application: { status: string; preferred_course: string | null; created_at: string; academic_stream?: string | null } | null
   documentsCount: number
   requiredDocumentsCount: number
   counselingSession: { scheduled_date: string; scheduled_time: string; status: string } | null
@@ -34,7 +34,7 @@ export default function StudentDashboard() {
       if (!user) return
 
       const [applicationRes, storageRes, counselingRes, notifRes] = await Promise.all([
-        supabase.from('applications').select('status, preferred_course, created_at, academic_stream').eq('student_id', user.id).order('created_at', { ascending: false }).limit(1).single(),
+        supabase.from('applications').select('*').eq('student_id', user.id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
         fetch('/api/storage/list', { cache: 'no-store' }),
         supabase.from('counseling_sessions').select('scheduled_date, scheduled_time, status').eq('student_id', user.id).eq('status', 'scheduled').order('scheduled_date', { ascending: true }).limit(1).single(),
         supabase.from('notifications').select('*').eq('student_id', user.id).order('created_at', { ascending: false }).limit(5),

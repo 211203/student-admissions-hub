@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS public.applications (
   email TEXT NOT NULL,
   phone TEXT,
   preferred_course TEXT NOT NULL,
+  academic_stream TEXT CHECK (academic_stream IN ('PCM', 'PCB', 'PCMB')),
   academic_background TEXT,
   entrance_exam_score NUMERIC,
   preferred_intake_year TEXT,
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS public.documents (
   student_id UUID REFERENCES public.student_profiles(id) ON DELETE CASCADE,
   document_type TEXT NOT NULL CHECK (document_type IN (
     '10th_marksheet', '12th_marksheet', 'leaving_certificate',
-    'mht_cet_scorecard', 'jee_scorecard',
+    'mht_cet_scorecard', 'jee_scorecard', 'neet_scorecard',
     'id_proof', 'photo',
     'caste_certificate', 'income_certificate',
     'gap_certificate'

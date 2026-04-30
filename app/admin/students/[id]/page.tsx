@@ -18,17 +18,18 @@ import toast from 'react-hot-toast'
 interface Application {
   id: string
   student_id: string
+  student_name?: string | null
+  student_email?: string | null
+  student_phone?: string | null
   full_name: string
   email: string
-  phone: string
-  preferred_course: string
-  academic_background: string
-  entrance_exam_score: number
-  preferred_intake_year: string
-  budget_range: string
-  questions: string
+  phone: string | null
+  preferred_course: string | null
+  academic_stream: string | null
+  preferred_intake_year: string | null
+  questions: string | null
   status: string
-  admin_notes: string
+  admin_notes: string | null
   created_at: string
   updated_at: string
 }
@@ -42,6 +43,7 @@ const DOC_LABELS: Record<string, string> = {
   'leaving_certificate': 'Leaving Certificate (LC/TC)',
   'mht_cet_scorecard': 'MHT-CET Scorecard',
   'jee_scorecard': 'JEE Scorecard',
+  'neet_scorecard': 'NEET Scorecard',
   'id_proof': 'ID Proof (Aadhar/PAN)',
   'photo': 'Passport Photo',
   'caste_certificate': 'Caste Certificate',
@@ -65,7 +67,12 @@ export default function StudentDetailPage() {
       const supabase = createClient()
       const { data: app } = await supabase.from('applications').select('*').eq('id', id as string).single()
       if (!app) { setLoading(false); return }
-      setApplication(app)
+      setApplication({
+        ...app,
+        full_name: app.student_name || app.full_name || '',
+        email: app.student_email || app.email || '',
+        phone: app.student_phone || app.phone || null,
+      })
       setAdminNotes(app.admin_notes || '')
 
       const [docsRes, chatRes] = await Promise.all([
@@ -166,18 +173,31 @@ export default function StudentDetailPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          applicationId: application?.id,
+          student_name: application?.full_name,
+          student_email: application?.email,
+          student_phone: application?.phone,
+          student_id: application?.student_id,
+          intake_year: application?.preferred_intake_year,
+          preferred_stream: application?.academic_stream,
           studentId: application?.student_id,
-          studentName: application?.full_name,
-          studentEmail: application?.email,
+          fullName: application?.full_name,
+          email: application?.email,
+          phone: application?.phone,
+          academicStream: application?.academic_stream,
+          preferredCourse: application?.preferred_course,
+          preferredIntakeYear: application?.preferred_intake_year,
+          questions: application?.questions,
           documents: docsWithUrls,
           timestamp: new Date().toISOString(),
         }),
       })
 
       if (response.ok) {
-        toast.success('Documents sent for text extraction!')
+        toast.success('Sent to n8n for processing!')
       } else {
-        toast.error('Failed to process documents')
+        const text = await response.text().catch(() => '')
+        toast.error(text || 'Failed to process documents')
       }
     } catch (err) {
       console.error('Process documents error:', err)
@@ -230,7 +250,7 @@ export default function StudentDetailPage() {
           className="gap-2"
         >
           <XCircle className="h-4 w-4" />
-          Reject
+          Not Approved
         </Button>
         <Button
           onClick={() => updateStatus('reviewing')}
@@ -241,15 +261,6 @@ export default function StudentDetailPage() {
           <Clock className="h-4 w-4" />
           Mark Reviewing
         </Button>
-        <Button
-          onClick={sendEmail}
-          loading={updating === 'email'}
-          variant="outline"
-          className="gap-2"
-        >
-          <Mail className="h-4 w-4" />
-          Send Email
-        </Button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -259,16 +270,16 @@ export default function StudentDetailPage() {
           <Card>
             <div className="flex items-center gap-2 mb-4">
               <User className="h-4 w-4 text-violet-400" />
-              <h2 className="text-lg font-semibold text-white">Student Profile</h2>
+              <h2 className="text-lg font-semibold text-white">Application</h2>
             </div>
             <div className="grid grid-cols-2 gap-4">
               {[
                 { label: 'Email', value: application.email, icon: Mail },
                 { label: 'Phone', value: application.phone || 'N/A', icon: Phone },
-                { label: 'Preferred Course', value: application.preferred_course, icon: BookOpen },
-                { label: 'Intake Year', value: application.preferred_intake_year, icon: CalendarDays },
-                { label: 'Exam Score', value: `${application.entrance_exam_score}/100`, icon: CheckCircle },
-                { label: 'Budget Range', value: application.budget_range, icon: FileText },
+                { label: 'Academic Stream', value: application.academic_stream || 'N/A', icon: BookOpen },
+                { label: 'Preferred Course', value: application.preferred_course || 'N/A', icon: BookOpen },
+                { label: 'Intake Year', value: application.preferred_intake_year || 'N/A', icon: CalendarDays },
+                { label: 'Last Updated', value: formatDateTime(application.updated_at), icon: Clock },
               ].map(({ label, value, icon: Icon }) => (
                 <div key={label} className="space-y-1">
                   <p className="text-xs font-medium text-slate-500 flex items-center gap-1">
@@ -277,10 +288,6 @@ export default function StudentDetailPage() {
                   <p className="text-white text-sm">{value}</p>
                 </div>
               ))}
-            </div>
-            <div className="mt-4 pt-4 border-t border-slate-700">
-              <p className="text-xs font-medium text-slate-500 mb-1">Academic Background</p>
-              <p className="text-slate-300 text-sm leading-relaxed">{application.academic_background}</p>
             </div>
             {application.questions && (
               <div className="mt-4 pt-4 border-t border-slate-700">

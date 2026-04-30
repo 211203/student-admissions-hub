@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { type ComponentType, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Card } from '@/components/ui/Card'
@@ -29,12 +30,20 @@ interface Stats {
 
 interface CourseData { name: string; value: number }
 interface MonthData { month: string; count: number }
+interface StatCard {
+  label: string
+  value: number
+  icon: ComponentType<{ className?: string }>
+  color: string
+  shadow: string
+  change: string
+  href?: string
+}
 
 interface StudentProfile {
   id: string
   full_name: string | null
   email: string | null
-  last_login_at: string | null
   created_at: string
 }
 
@@ -50,16 +59,23 @@ export default function AdminDashboard() {
     const fetchData = async () => {
       const supabase = createClient()
 
-      const [appsRes, counselingRes, studentsRes, studentsCountRes] = await Promise.all([
+      const [appsRes, counselingRes] = await Promise.all([
         supabase.from('applications').select('status, preferred_course, created_at'),
         supabase.from('counseling_sessions').select('status', { count: 'exact' }).eq('status', 'scheduled'),
-        supabase.from('student_profiles').select('*').order('created_at', { ascending: false }).limit(10),
-        supabase.from('student_profiles').select('*', { count: 'exact', head: true }),
       ])
 
       const apps = appsRes.data || []
-      const students = studentsRes.data || []
-      const totalStudents = studentsCountRes.count || 0
+      const recentFromApplications = apps
+        .slice()
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 10)
+        .map((a) => ({
+          id: `${a.created_at}-${a.preferred_course || 'course'}`,
+          full_name: null,
+          email: null,
+          created_at: a.created_at,
+        }))
+      const totalStudents = apps.length
 
       // Stats
       setStats({
@@ -70,7 +86,7 @@ export default function AdminDashboard() {
         registeredStudents: totalStudents,
       })
 
-      setRecentStudents(students)
+      setRecentStudents(recentFromApplications)
 
       // By course
       const courseCounts: Record<string, number> = {}
@@ -96,8 +112,8 @@ export default function AdminDashboard() {
     fetchData()
   }, [])
 
-  const statCards = [
-    { label: 'Registered Students', value: stats?.registeredStudents || 0, icon: UserCheck, color: 'from-pink-600 to-rose-600', shadow: 'shadow-pink-500/25', change: 'All signups' },
+  const statCards: StatCard[] = [
+    { label: 'Registered Students', value: stats?.registeredStudents || 0, icon: UserCheck, color: 'from-pink-600 to-rose-600', shadow: 'shadow-pink-500/25', change: 'All signups', href: '/admin/merit-list' },
     { label: 'Total Applications', value: stats?.total || 0, icon: Users, color: 'from-violet-600 to-indigo-600', shadow: 'shadow-violet-500/25', change: 'Submitted forms' },
     { label: 'Pending Review', value: stats?.pending || 0, icon: Clock, color: 'from-amber-600 to-orange-600', shadow: 'shadow-amber-500/25', change: 'Needs attention' },
     { label: 'Admitted Students', value: stats?.admitted || 0, icon: CheckCircle, color: 'from-emerald-600 to-teal-600', shadow: 'shadow-emerald-500/25', change: 'Approved' },
@@ -115,12 +131,6 @@ export default function AdminDashboard() {
     return null
   }
 
-  const isOnline = (lastLogin: string | null) => {
-    if (!lastLogin) return false
-    const diff = Date.now() - new Date(lastLogin).getTime()
-    return diff < 15 * 60 * 1000 // Online if logged in within 15 minutes
-  }
-
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -135,19 +145,39 @@ export default function AdminDashboard() {
         <>
           {/* Stats Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
-            {statCards.map(({ label, value, icon: Icon, color, shadow, change }) => (
-              <Card key={label} className="relative overflow-hidden">
-                <div className="flex items-start justify-between mb-4">
-                  <div className={`w-12 h-12 bg-gradient-to-br ${color} rounded-xl flex items-center justify-center shadow-lg ${shadow}`}>
-                    <Icon className="h-6 w-6 text-white" />
+            {statCards.map(({ label, value, icon: Icon, color, shadow, change, href }) => {
+              if (href) {
+                return (
+                  <Link key={label} href={href} className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                    <Card className="relative overflow-hidden cursor-pointer transition-all duration-200 hover:scale-[1.02] hover:shadow-xl hover:shadow-blue-500/25">
+                      <div className="flex items-start justify-between mb-4">
+                        <div className={`w-12 h-12 bg-gradient-to-br ${color} rounded-xl flex items-center justify-center shadow-lg ${shadow}`}>
+                          <Icon className="h-6 w-6 text-white" />
+                        </div>
+                        <ArrowUpRight className="h-4 w-4 text-slate-500" />
+                      </div>
+                      <p className="text-4xl font-bold text-white mb-1">{value}</p>
+                      <p className="text-slate-400 text-sm font-medium">{label}</p>
+                      <p className="text-slate-500 text-xs mt-1">{change}</p>
+                    </Card>
+                  </Link>
+                )
+              }
+
+              return (
+                <Card key={label} className="relative overflow-hidden">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className={`w-12 h-12 bg-gradient-to-br ${color} rounded-xl flex items-center justify-center shadow-lg ${shadow}`}>
+                      <Icon className="h-6 w-6 text-white" />
+                    </div>
+                    <ArrowUpRight className="h-4 w-4 text-slate-500" />
                   </div>
-                  <ArrowUpRight className="h-4 w-4 text-slate-500" />
-                </div>
-                <p className="text-4xl font-bold text-white mb-1">{value}</p>
-                <p className="text-slate-400 text-sm font-medium">{label}</p>
-                <p className="text-slate-500 text-xs mt-1">{change}</p>
-              </Card>
-            ))}
+                  <p className="text-4xl font-bold text-white mb-1">{value}</p>
+                  <p className="text-slate-400 text-sm font-medium">{label}</p>
+                  <p className="text-slate-500 text-xs mt-1">{change}</p>
+                </Card>
+              )
+            })}
           </div>
 
           {/* Recent Students + Charts */}
@@ -165,30 +195,21 @@ export default function AdminDashboard() {
                   {recentStudents.map(student => (
                     <div
                       key={student.id}
-                      className="flex items-center gap-3 p-3 bg-slate-700/50 rounded-xl hover:bg-slate-700 transition-colors cursor-pointer"
-                      onClick={() => router.push(`/admin/students?search=${encodeURIComponent(student.email || '')}`)}
-                    >
-                      <div className="relative">
-                        <div className="w-10 h-10 bg-gradient-to-br from-pink-600 to-rose-600 rounded-full flex items-center justify-center text-white text-sm font-bold">
-                          {student.full_name?.charAt(0)?.toUpperCase() || '?'}
+                        className="flex items-center gap-3 p-3 bg-slate-700/50 rounded-xl hover:bg-slate-700 transition-colors cursor-pointer"
+                        onClick={() => router.push('/admin/students')}
+                      >
+                        <div className="relative">
+                          <div className="w-10 h-10 bg-gradient-to-br from-pink-600 to-rose-600 rounded-full flex items-center justify-center text-white text-sm font-bold">
+                            {(student.full_name || student.email || 'S').charAt(0).toUpperCase()}
+                          </div>
                         </div>
-                        {isOnline(student.last_login_at) && (
-                          <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-slate-800 rounded-full"></span>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-white truncate">{student.full_name || 'Unknown'}</p>
-                        <p className="text-xs text-slate-400 truncate">{student.email}</p>
-                        {student.last_login_at && (
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-white truncate">{student.full_name || 'Student'}</p>
+                          <p className="text-xs text-slate-400 truncate">{student.email || 'From applications table'}</p>
                           <p className="text-xs text-slate-500">
-                            {isOnline(student.last_login_at) ? (
-                              <span className="text-emerald-400">Online now</span>
-                            ) : (
-                              `Last seen: ${formatDateTime(student.last_login_at)}`
-                            )}
+                            Applied: {formatDateTime(student.created_at)}
                           </p>
-                        )}
-                      </div>
+                        </div>
                       <ChevronRight className="h-4 w-4 text-slate-600" />
                     </div>
                   ))}

@@ -1,13 +1,11 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { DOCUMENT_CATEGORIES, getDocumentTypesForStream } from '@/lib/utils'
-import { STUDENT_DOCUMENTS_BUCKET } from '@/lib/supabase/storage'
 import { Upload, FileText, CheckCircle, X, RefreshCw, GraduationCap, Award, User, FileCheck, FolderPlus, File, Trash2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 
@@ -27,27 +25,15 @@ interface UploadedDoc {
   file_path: string
 }
 
-interface PendingApplication {
-  student_id: string
-  student_name: string
-  student_email: string
-  student_phone: string | null
-  preferred_course: string
-  academic_stream: string
-  preferred_intake_year: string | null
-  questions: string | null
-}
 
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<UploadedDoc[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedFiles, setSelectedFiles] = useState<Record<string, File>>({})
   const [uploading, setUploading] = useState(false)
-  const [extracting, setExtracting] = useState(false)
-  const [academicStream, setAcademicStream] = useState<string | null>(null)
-  const [pendingApplication, setPendingApplication] = useState<PendingApplication | null>(null)
-
-  const docTypes = getDocumentTypesForStream(academicStream)
+  const isFetchingRef = useRef(false)
+  const lastSilentFetchAtRef = useRef(0)
+  const docTypes = getDocumentTypesForStream('PCM')
 
   const withTimeout = async <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
     let timeoutId: ReturnType<typeof setTimeout> | null = null
@@ -62,58 +48,64 @@ export default function DocumentsPage() {
   }
 
 
-  const fetchDocuments = useCallback(async () => {
-    setLoading(true)
+  const fetchDocuments = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true
+    const now = Date.now()
+
+    if (silent && now - lastSilentFetchAtRef.current < 30000) {
+      return
+    }
+    if (isFetchingRef.current) {
+      return
+    }
+
+    isFetchingRef.current = true
+    if (!silent) {
+      setLoading(true)
+    }
     try {
-      const supabase = createClient()
-      // First check for pending application in sessionStorage
-      const pendingData = sessionStorage.getItem('pendingApplication')
-      if (pendingData) {
-        try {
-          const parsed = JSON.parse(pendingData) as PendingApplication
-          setPendingApplication(parsed)
-          setAcademicStream(parsed.academic_stream || 'PCM')
-          // Continue loading uploaded documents from server;
-          // do not return early, otherwise uploaded state never reflects in UI.
-        } catch {
-          // ignore parse errors
-        }
-      }
-
-      // Fallback: check Supabase for existing application
-      const { data: { user } } = await withTimeout(supabase.auth.getUser(), 15000, 'auth getUser')
-      if (!user) {
-        setDocuments([])
-        return
-      }
-
       const listRes = await withTimeout(fetch('/api/storage/list', { cache: 'no-store' }), 20000, 'storage list')
       if (!listRes.ok) {
         throw new Error(await listRes.text())
       }
       const listJson = (await listRes.json()) as { documents: UploadedDoc[] }
       setDocuments(listJson.documents || [])
-    } catch {
-      // If we have pending application, use that
-      const pendingData = sessionStorage.getItem('pendingApplication')
-      if (pendingData) {
-        try {
-          const parsed = JSON.parse(pendingData) as PendingApplication
-          setPendingApplication(parsed)
-          setAcademicStream(parsed.academic_stream || 'PCM')
-          return
-        } catch {
-          // ignore
-        }
+      if (silent) {
+        lastSilentFetchAtRef.current = now
       }
+    } catch {
       setDocuments([])
-      toast.error('Unable to load documents right now. Please try again.')
+      if (!silent) {
+        toast.error('Unable to load documents right now. Please try again.')
+      }
     } finally {
-      setLoading(false)
+      isFetchingRef.current = false
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }, [])
 
   useEffect(() => { fetchDocuments() }, [fetchDocuments])
+
+  useEffect(() => {
+    const onFocus = () => {
+      fetchDocuments({ silent: true })
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchDocuments({ silent: true })
+      }
+    }
+
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [fetchDocuments])
 
   // Select a file locally (not uploaded yet)
   const handleSelectFile = (docType: string, file: File) => {
@@ -129,7 +121,7 @@ export default function DocumentsPage() {
     })
   }
 
-  // Upload all selected files and trigger n8n webhook for text extraction
+  // Upload all selected files (DB + Storage only). Processing is admin-only.
   const handleUploadAndExtract = async () => {
     const filesToUpload = Object.entries(selectedFiles)
     if (filesToUpload.length === 0) {
@@ -139,88 +131,19 @@ export default function DocumentsPage() {
 
     setUploading(true)
     try {
-      // Get student ID from pending application or try to get user
-      let studentId = pendingApplication?.student_id
-      let studentName = pendingApplication?.student_name || ''
-      let studentEmail = pendingApplication?.student_email || ''
-      let studentPhone = pendingApplication?.student_phone || ''
-      let preferredCourse = pendingApplication?.preferred_course || ''
-      let streamValue = pendingApplication?.academic_stream || academicStream || 'PCM'
-      let preferredIntakeYear = pendingApplication?.preferred_intake_year || ''
-      let questions = pendingApplication?.questions || ''
-
-      const supabase = createClient()
-      
-      // If no pending application, try to get user from Supabase
-      if (!studentId) {
-        const { data: { user } } = await withTimeout(supabase.auth.getUser(), 15000, 'auth getUser')
-        if (!user) {
-          toast.error('Please login first')
-          setUploading(false)
-          return
-        }
-        studentId = user.id
-        studentEmail = user.email || ''
-      }
-
-      // If the student didn't just apply in this session, fetch latest application data
-      // so we don't send placeholders like "N/A" to the webhook (DB has check constraints).
-      let hasApplicationDetails = Boolean(pendingApplication)
-      if (!pendingApplication && studentId) {
-        try {
-          const appRes = await withTimeout(
-            supabase
-              .from('applications')
-              .select('full_name, email, phone, preferred_course, academic_stream, preferred_intake_year, questions')
-              .eq('student_id', studentId)
-              .order('created_at', { ascending: false })
-              .limit(1)
-              .maybeSingle(),
-            15000,
-            'fetch application'
-          )
-
-          if (appRes.data) {
-            hasApplicationDetails = true
-            studentName = appRes.data.full_name || studentName
-            studentEmail = appRes.data.email || studentEmail
-            studentPhone = appRes.data.phone || studentPhone
-            preferredCourse = appRes.data.preferred_course || preferredCourse
-            streamValue = appRes.data.academic_stream || streamValue
-            preferredIntakeYear = appRes.data.preferred_intake_year || preferredIntakeYear
-            questions = appRes.data.questions || questions
-          }
-        } catch {
-          // ignore (we can still upload; webhook may be skipped)
-        }
-      }
-
-      // Normalize stream to allowed values (prevents DB CHECK constraint violations)
-      streamValue = (streamValue === 'PCM' || streamValue === 'PCB' || streamValue === 'PCMB') ? streamValue : 'PCM'
-
-      const existingDocTypes = new Set(documents.map((d) => d.document_type))
-
       console.log('[upload] Starting upload for', filesToUpload.length, 'files')
-      console.log('[upload] Student ID:', studentId)
 
-      // NOTE: We do not write to student_profiles/documents tables here.
-      // This avoids RLS/FK timeouts and keeps the flow focused on Storage + webhook.
+      // Upload goes through /api/storage/upload which writes Storage + documents table.
 
-      // Upload files to Supabase storage and collect metadata
+      // Upload files to Supabase storage + documents table
       const uploadedDocs: { docType: string; filePath: string; fileName: string; signedUrl: string }[] = []
-      const docsForWebhook: { docType: string; filePath: string; fileName: string; signedUrl: string }[] = []
 
       for (const [docType, file] of filesToUpload) {
-        const fileExt = file.name.split('.').pop() || 'bin'
-        const filePath = `${studentId}/${docType}.${fileExt}`
-
-        console.log('[upload] Uploading:', docType, '->', filePath, 'size:', file.size)
+        console.log('[upload] Uploading:', docType, 'size:', file.size)
 
         const formData = new FormData()
         formData.set('docType', docType)
         formData.set('file', file)
-        formData.set('studentName', studentName)
-        formData.set('studentEmail', studentEmail)
 
         const uploadRes = await withTimeout(
           fetch('/api/storage/upload', { method: 'POST', body: formData }),
@@ -251,17 +174,11 @@ export default function DocumentsPage() {
         }
 
         uploadedDocs.push(meta)
-
-        // Only trigger webhook for *new* document types (skip replacements)
-        if (!existingDocTypes.has(meta.docType)) {
-          docsForWebhook.push(meta)
-          existingDocTypes.add(meta.docType)
-        }
       }
 
       toast.success(`${uploadedDocs.length} document(s) uploaded successfully!`)
 
-      // Reflect uploaded state immediately in UI, even if webhook is slow/fails
+      // Reflect uploaded state immediately in UI
       setSelectedFiles({})
       try {
         await fetchDocuments()
@@ -269,61 +186,7 @@ export default function DocumentsPage() {
         // keep UI responsive even if refresh fails
       }
 
-      // Skip webhook for replacements (only process newly-added document types)
-      if (docsForWebhook.length === 0) {
-        toast.success('Documents updated successfully!')
-        return
-      }
-
-      // If we don't have application details yet, don't trigger processing.
-      // Otherwise n8n may try to create an invalid applications row (CHECK constraint).
-      if (!hasApplicationDetails) {
-        toast.success('Documents uploaded. Please submit your application to start processing.')
-        return
-      }
-
-      // Send to n8n webhook with signed URLs
-      setExtracting(true)
-
-      const webhookUrl = '/api/webhook/documents'
-      console.log('[upload] Sending to webhook:', webhookUrl)
-
-      const webhookResponse = await withTimeout(
-        fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            studentId,
-            studentName,
-            studentEmail,
-            studentPhone,
-            preferredCourse,
-            academicStream: streamValue,
-            preferredIntakeYear,
-            questions,
-            documents: docsForWebhook,
-            timestamp: new Date().toISOString(),
-          }),
-        }),
-        305000,
-        'webhook call'
-      )
-
-      console.log('[upload] Webhook response status:', webhookResponse.status)
-
-      if (webhookResponse.ok) {
-        toast.success('Documents sent for processing!')
-        sessionStorage.removeItem('pendingApplication')
-        try {
-          await fetchDocuments()
-        } catch {
-          // keep UI responsive even if refresh fails
-        }
-      } else {
-        const errorText = await webhookResponse.text()
-        console.error('[upload] Webhook error:', errorText)
-        toast.error('Upload successful, but processing request failed')
-      }
+      toast.success('Documents uploaded successfully!')
 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : ''
@@ -344,24 +207,40 @@ export default function DocumentsPage() {
       }
     } finally {
       setUploading(false)
-      setExtracting(false)
     }
   }
 
-  const handleDelete = async (_docId: string, filePath: string) => {
+  const handleDelete = async (docId: string, filePath: string) => {
     try {
+      const docType = documents.find((d) => d.id === docId)?.document_type
       const res = await fetch('/api/storage/remove', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePaths: [filePath] }),
+        body: JSON.stringify({ docIds: [docId], filePaths: [filePath] }),
       })
-      if (!res.ok) {
-        throw new Error(await res.text())
+      const payload = (await res.json().catch(() => ({}))) as {
+        error?: string
+        deletedIds?: string[]
       }
+      if (!res.ok) {
+        throw new Error(payload.error || 'Failed to delete document')
+      }
+      if (!Array.isArray(payload.deletedIds) || !payload.deletedIds.includes(docId)) {
+        throw new Error('Document delete did not persist')
+      }
+      if (docType) {
+        setSelectedFiles((prev) => {
+          const updated = { ...prev }
+          delete updated[docType]
+          return updated
+        })
+      }
+      setDocuments((prev) => prev.filter((doc) => doc.id !== docId))
       toast.success('Document removed')
-      fetchDocuments()
-    } catch {
-      toast.error('Failed to delete document')
+      fetchDocuments({ silent: true })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to delete document'
+      toast.error(msg)
     }
   }
 
@@ -405,7 +284,7 @@ export default function DocumentsPage() {
         <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
           <div
             className="h-full bg-gradient-to-r from-violet-600 to-indigo-600 rounded-full transition-all duration-500"
-            style={{ width: `${(uploadedRequiredCount / requiredDocs.length) * 100}%` }}
+            style={{ width: `${requiredDocs.length ? (uploadedRequiredCount / requiredDocs.length) * 100 : 0}%` }}
           />
         </div>
       </div>
@@ -494,15 +373,15 @@ export default function DocumentsPage() {
                             )}
                             {/* Choose File button */}
                             <label className="cursor-pointer">
-                              <input
-                                type="file"
-                                className="hidden"
-                                accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
-                                disabled={uploading}
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0]
-                                  if (file) handleSelectFile(id, file)
-                                  e.target.value = ''
+                                <input
+                                  type="file"
+                                  className="hidden"
+                                  accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                                  disabled={uploading}
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0]
+                                    if (file) handleSelectFile(id, file)
+                                    e.target.value = ''
                                 }}
                               />
                               <span className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-xl transition-all duration-200 cursor-pointer ${
@@ -521,15 +400,15 @@ export default function DocumentsPage() {
                         {!uploaded && !selected && (
                           <div className="mx-5 mb-5 border-2 border-dashed border-slate-600 rounded-xl p-4 text-center">
                             <label className="cursor-pointer block">
-                              <input
-                                type="file"
-                                className="hidden"
-                                accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
-                                disabled={uploading}
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0]
-                                  if (file) handleSelectFile(id, file)
-                                  e.target.value = ''
+                                <input
+                                  type="file"
+                                  className="hidden"
+                                  accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                                  disabled={uploading}
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0]
+                                    if (file) handleSelectFile(id, file)
+                                    e.target.value = ''
                                 }}
                               />
                               <p className="text-slate-400 text-xs">
@@ -559,7 +438,7 @@ export default function DocumentsPage() {
                   {Object.keys(selectedFiles).length} file(s) selected
                 </p>
                 <p className="text-slate-400 text-sm">
-                  Ready to upload and extract text
+                  Ready to upload
                 </p>
               </div>
               <Button
@@ -594,10 +473,10 @@ export default function DocumentsPage() {
               })}
             </div>
 
-            {/* Upload & Extract Button */}
+            {/* Upload Button */}
             <Button
               onClick={handleUploadAndExtract}
-              disabled={uploading || extracting}
+              disabled={uploading}
               className="w-full gap-2"
             >
               {uploading ? (
@@ -605,15 +484,10 @@ export default function DocumentsPage() {
                   <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   Uploading...
                 </>
-              ) : extracting ? (
-                <>
-                  <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Extracting Text...
-                </>
               ) : (
                 <>
                   <Upload className="h-4 w-4" />
-                  Upload & Extract Text
+                  Upload Documents
                 </>
               )}
             </Button>
@@ -621,7 +495,7 @@ export default function DocumentsPage() {
         </Card>
       )}
 
-      {uploadedRequiredCount === requiredDocs.length && (
+      {requiredDocs.length > 0 && uploadedRequiredCount === requiredDocs.length && (
         <Card className="border-green-500/30 bg-green-500/5">
           <div className="flex items-center gap-3">
             <CheckCircle className="h-6 w-6 text-green-400 shrink-0" />

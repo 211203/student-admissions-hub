@@ -55,6 +55,7 @@ export async function proxy(request: NextRequest) {
     if (profile && profile.role === 'admin') {
       return NextResponse.redirect(new URL('/admin/dashboard', request.url))
     }
+
     // Allow if role is student or profile missing (just registered)
   }
 

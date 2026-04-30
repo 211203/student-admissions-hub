@@ -1,12 +1,11 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import { useAuth } from '@/lib/hooks/useAuth'
 import { Button } from '@/components/ui/Button'
 import { Spinner } from '@/components/ui/Spinner'
 import { formatDateTime } from '@/lib/utils'
-import { MessageSquare, Send, Bot, User, Trash2, Sparkles } from 'lucide-react'
+import { MessageSquare, Bot, User, Trash2, Sparkles } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 interface Message {
@@ -24,27 +23,42 @@ const WELCOME_MESSAGE: Message = {
 
 export default function ChatPage() {
   const { profile } = useAuth()
-  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
+  const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [historLoading, setHistoryLoading] = useState(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
+  const persistMessage = async (role: 'user' | 'assistant', message: string) => {
+    const res = await fetch('/api/chat/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, message }),
+    })
+    const data = await res.json().catch(() => ({} as { error?: string; message?: Message }))
+    if (!res.ok || !data.message) {
+      throw new Error(data.error || 'Failed to save chat message')
+    }
+    return data.message
+  }
+
   useEffect(() => {
     const fetchHistory = async () => {
-      const supabase = createClient()
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-
-      const { data } = await supabase
-        .from('chat_messages')
-        .select('*')
-        .eq('student_id', user.id)
-        .order('created_at', { ascending: true })
-        .limit(50)
-
-      if (data && data.length > 0) {
-        setMessages([WELCOME_MESSAGE, ...data])
+      try {
+        const res = await fetch('/api/chat/messages', { cache: 'no-store' })
+        const data = await res.json().catch(() => ({} as { messages?: Message[]; error?: string }))
+        if (!res.ok) {
+          setMessages([WELCOME_MESSAGE])
+          setHistoryLoading(false)
+          return
+        }
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages)
+        } else {
+          setMessages([WELCOME_MESSAGE])
+        }
+      } catch {
+        setMessages([WELCOME_MESSAGE])
       }
       setHistoryLoading(false)
     }
@@ -62,57 +76,55 @@ export default function ChatPage() {
     setInput('')
     setLoading(true)
 
-    const userMsg: Message = { role: 'user', message: userMessage, created_at: new Date().toISOString() }
-    setMessages(prev => [...prev, userMsg])
-
     try {
-      const supabase = createClient()
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
+      const savedUserMessage = await persistMessage('user', userMessage)
+      setMessages(prev => [...prev, savedUserMessage])
 
-      // Save user message
-      await supabase.from('chat_messages').insert({ student_id: user.id, message: userMessage, role: 'user' })
+      const res = await fetch('/api/webhook/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: userMessage,
+          query: userMessage,
+          studentName: profile?.full_name,
+          studentEmail: profile?.email,
+          history: [...messages, savedUserMessage].slice(-6).map(m => ({ role: m.role, content: m.message })),
+        }),
+      })
 
-      // Send to n8n webhook
-      let assistantReply = "Thank you for your question! Our admission team will get back to you shortly. In the meantime, you can check \our FAQ or book a counseling session for personalized guidance."
-      try {
-        const res = await fetch('/api/webhook/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: userMessage,
-            studentId: user.id,
-            studentName: profile?.full_name,
-            history: messages.slice(-5).map(m => ({ role: m.role, content: m.message })),
-          }),
-        })
-        if (res.ok) {
-          const data = await res.json()
-          assistantReply = data.reply || data.message || assistantReply
-        }
-      } catch {
-        // webhook failure - use fallback
+      const data = await res.json().catch(() => ({} as { reply?: string; message?: string; error?: string }))
+      if (!res.ok) {
+        throw new Error(data.error || 'AI webhook request failed')
       }
 
-      const assistantMsg: Message = { role: 'assistant', message: assistantReply, created_at: new Date().toISOString() }
-      setMessages(prev => [...prev, assistantMsg])
+      const assistantReply = (data.reply || data.message || '').trim()
+      if (!assistantReply) {
+        throw new Error('AI webhook returned empty response')
+      }
 
-      // Save assistant message
-      await supabase.from('chat_messages').insert({ student_id: user.id, message: assistantReply, role: 'assistant' })
-    } catch {
-      toast.error('Failed to send message. Please try again.')
+      const savedAssistantMessage = await persistMessage('assistant', assistantReply)
+      setMessages(prev => [...prev, savedAssistantMessage])
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to send message. Please try again.'
+      toast.error(msg)
     } finally {
       setLoading(false)
     }
   }
 
   const clearChat = async () => {
-    const supabase = createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    await supabase.from('chat_messages').delete().eq('student_id', user.id)
-    setMessages([WELCOME_MESSAGE])
-    toast.success('Chat history cleared')
+    try {
+      const res = await fetch('/api/chat/clear', { method: 'POST' })
+      const data = await res.json().catch(() => ({} as { error?: string }))
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to clear chat history')
+      }
+      setMessages([WELCOME_MESSAGE])
+      toast.success('Chat history cleared')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to clear chat history'
+      toast.error(msg)
+    }
   }
 
   const formatMessage = (text: string) => {

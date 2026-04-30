@@ -10,34 +10,40 @@ import { Spinner } from '@/components/ui/Spinner'
 import { Select } from '@/components/ui/Input'
 import { formatDate, formatDateTime } from '@/lib/utils'
 import { STUDENT_DOCUMENTS_BUCKET } from '@/lib/supabase/storage'
-import { Users, Search, ChevronRight, SlidersHorizontal, Cog, FileText, MessageSquare, ClipboardList } from 'lucide-react'
+import { Users, Search, ChevronRight, SlidersHorizontal, Cog, FileText } from 'lucide-react'
 import toast from 'react-hot-toast'
 
-interface StudentWithDetails {
+interface ApplicationWithMeta {
   id: string
+  student_id: string
+  student_name?: string | null
+  student_email?: string | null
+  student_phone?: string | null
   full_name: string | null
   email: string | null
   phone: string | null
-  last_login_at: string | null
+  preferred_course: string | null
+  academic_stream: string | null
+  preferred_intake_year: string | null
+  questions: string | null
+  status: string | null
   created_at: string
-  // Counts from related tables
   documents_count: number
-  has_application: boolean
-  application_status: string | null
-  chat_messages_count: number
 }
 
 const STATUS_OPTIONS = [
-  { value: 'all', label: 'All Students' },
-  { value: 'with_application', label: 'With Application' },
-  { value: 'no_application', label: 'No Application Yet' },
+  { value: 'all', label: 'All Statuses' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'reviewing', label: 'Reviewing' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'rejected', label: 'Rejected' },
 ]
 
 const PAGE_SIZE = 10
 
 export default function StudentsPage() {
   const router = useRouter()
-  const [students, setStudents] = useState<StudentWithDetails[]>([])
+  const [applications, setApplications] = useState<ApplicationWithMeta[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -46,101 +52,77 @@ export default function StudentsPage() {
   const [processingId, setProcessingId] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchStudents()
+    fetchApplications()
   }, [search, statusFilter, page])
 
-  const fetchStudents = async () => {
+  const fetchApplications = async () => {
     setLoading(true)
     const supabase = createClient()
 
-    // Fetch all student profiles
     let query = supabase
-      .from('student_profiles')
+      .from('applications')
       .select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
 
     if (search) {
-      query = query.or(`full_name.ilike.%${search}%,email.ilike.%${search}%`)
+      query = query.or(`student_name.ilike.%${search}%,student_email.ilike.%${search}%`)
     }
 
-    const { data: studentsData, count } = await query
-      .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+    if (statusFilter !== 'all') {
+      query = query.eq('status', statusFilter)
+    }
 
-    if (!studentsData) {
-      setStudents([])
+    const { data: apps, count } = await query.range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+
+    if (!apps) {
+      setApplications([])
       setTotal(0)
       setLoading(false)
       return
     }
 
-    // Fetch related data for each student
-    const studentIds = studentsData.map(s => s.id)
+    const studentIds = Array.from(new Set(apps.map(a => a.student_id)))
+    const { data: docsData } = await supabase
+      .from('documents')
+      .select('student_id')
+      .in('student_id', studentIds)
 
-    const [docsRes, appsRes, chatsRes] = await Promise.all([
-      supabase.from('documents').select('student_id').in('student_id', studentIds),
-      supabase.from('applications').select('student_id, status').in('student_id', studentIds),
-      supabase.from('chat_messages').select('student_id').in('student_id', studentIds),
-    ])
-
-    // Count documents per student
     const docCounts: Record<string, number> = {}
-    docsRes.data?.forEach(d => {
+    docsData?.forEach(d => {
       docCounts[d.student_id] = (docCounts[d.student_id] || 0) + 1
     })
 
-    // Get application status per student
-    const appStatus: Record<string, string> = {}
-    appsRes.data?.forEach(a => {
-      appStatus[a.student_id] = a.status
-    })
+    setApplications(
+      apps.map((a) => ({
+        ...a,
+        full_name: a.student_name || a.full_name || null,
+        email: a.student_email || a.email || null,
+        phone: a.student_phone || a.phone || null,
+        documents_count: docCounts[a.student_id] || 0,
+      }))
+    )
 
-    // Count chat messages per student
-    const chatCounts: Record<string, number> = {}
-    chatsRes.data?.forEach(c => {
-      chatCounts[c.student_id] = (chatCounts[c.student_id] || 0) + 1
-    })
-
-    // Combine data
-    let enrichedStudents: StudentWithDetails[] = studentsData.map(s => ({
-      ...s,
-      documents_count: docCounts[s.id] || 0,
-      has_application: !!appStatus[s.id],
-      application_status: appStatus[s.id] || null,
-      chat_messages_count: chatCounts[s.id] || 0,
-    }))
-
-    // Apply status filter
-    if (statusFilter === 'with_application') {
-      enrichedStudents = enrichedStudents.filter(s => s.has_application)
-    } else if (statusFilter === 'no_application') {
-      enrichedStudents = enrichedStudents.filter(s => !s.has_application)
-    }
-
-    setStudents(enrichedStudents)
     setTotal(count || 0)
     setLoading(false)
   }
 
-  const processStudent = async (e: React.MouseEvent, student: StudentWithDetails) => {
+  const processApplication = async (e: React.MouseEvent, app: ApplicationWithMeta) => {
     e.stopPropagation()
-    setProcessingId(student.id)
+    setProcessingId(app.id)
 
     try {
       const supabase = createClient()
 
-      // Fetch student's documents
       const { data: documents } = await supabase
         .from('documents')
         .select('*')
-        .eq('student_id', student.id)
+        .eq('student_id', app.student_id)
 
       if (!documents || documents.length === 0) {
         toast.error('No documents found for this student')
-        setProcessingId(null)
         return
       }
 
-      // Generate signed URLs for all documents
       const docsWithUrls = await Promise.all(
         documents.map(async (doc) => {
           const { data } = await supabase.storage
@@ -155,36 +137,42 @@ export default function StudentsPage() {
         })
       )
 
-      // Call n8n webhook
       const response = await fetch('/api/webhook/documents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          studentId: student.id,
-          studentName: student.full_name,
-          studentEmail: student.email,
+          applicationId: app.id,
+          student_name: app.full_name,
+          student_email: app.email,
+          student_phone: app.phone,
+          student_id: app.student_id,
+          intake_year: app.preferred_intake_year,
+          preferred_stream: app.academic_stream,
+          studentId: app.student_id,
+          fullName: app.full_name,
+          email: app.email,
+          phone: app.phone,
+          academicStream: app.academic_stream,
+          preferredCourse: app.preferred_course,
+          preferredIntakeYear: app.preferred_intake_year,
+          questions: app.questions,
           documents: docsWithUrls,
           timestamp: new Date().toISOString(),
         }),
       })
 
       if (response.ok) {
-        toast.success('Student data sent for processing!')
+        toast.success('Sent to n8n for processing!')
       } else {
-        toast.error('Failed to process student')
+        const text = await response.text().catch(() => '')
+        toast.error(text || 'Failed to process')
       }
     } catch (err) {
-      console.error('Process student error:', err)
-      toast.error('Failed to process student')
+      console.error('Process application error:', err)
+      toast.error('Failed to process')
     } finally {
       setProcessingId(null)
     }
-  }
-
-  const isOnline = (lastLogin: string | null) => {
-    if (!lastLogin) return false
-    const diff = Date.now() - new Date(lastLogin).getTime()
-    return diff < 15 * 60 * 1000
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
@@ -198,8 +186,8 @@ export default function StudentsPage() {
             <Users className="h-6 w-6 text-emerald-400" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-white">Students</h1>
-            <p className="text-slate-400 text-sm">{total} registered students</p>
+            <h1 className="text-2xl font-bold text-white">Applications</h1>
+            <p className="text-slate-400 text-sm">{total} application(s)</p>
           </div>
         </div>
       </div>
@@ -243,7 +231,7 @@ export default function StudentsPage() {
           <table className="w-full">
             <thead className="bg-slate-700/50">
               <tr>
-                {['Student', 'Status', 'Documents', 'Chats', 'Registered', 'Last Active', 'Actions', ''].map(col => (
+                {['Student', 'Stream', 'Course', 'Status', 'Docs', 'Applied', 'Last Active', 'Actions', ''].map(col => (
                   <th key={col} className="text-left px-5 py-3.5 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">{col}</th>
                 ))}
               </tr>
@@ -251,89 +239,69 @@ export default function StudentsPage() {
             <tbody className="divide-y divide-slate-700/50">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center">
+                  <td colSpan={9} className="py-16 text-center">
                     <Spinner />
                   </td>
                 </tr>
-              ) : students.length === 0 ? (
+              ) : applications.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-400">
-                    No students found
+                  <td colSpan={9} className="py-16 text-center text-slate-400">
+                    No applications found
                   </td>
                 </tr>
               ) : (
-                students.map((student) => (
+                applications.map((app) => (
                   <tr
-                    key={student.id}
+                    key={app.id}
                     className="hover:bg-slate-700/30 transition-colors cursor-pointer"
-                    onClick={() => {
-                      if (student.has_application) {
-                        // Find application and navigate
-                        router.push(`/admin/students?search=${encodeURIComponent(student.email || '')}`)
-                      }
-                    }}
+                    onClick={() => router.push(`/admin/students/${app.id}`)}
                   >
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-3">
                         <div className="relative">
                           <div className="w-10 h-10 bg-gradient-to-br from-violet-600 to-indigo-600 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0">
-                            {student.full_name?.charAt(0)?.toUpperCase() || '?'}
+                            {(app.full_name || app.email || app.student_id)?.charAt(0)?.toUpperCase() || '?'}
                           </div>
-                          {isOnline(student.last_login_at) && (
-                            <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-slate-800 rounded-full"></span>
-                          )}
                         </div>
                         <div>
-                          <span className="text-white font-medium text-sm whitespace-nowrap block">{student.full_name || 'Unknown'}</span>
-                          <span className="text-slate-400 text-xs">{student.email}</span>
+                          <span className="text-white font-medium text-sm whitespace-nowrap block">
+                            {app.full_name || app.email?.split('@')[0] || (app.student_id ? `Student ${app.student_id.slice(0, 8)}` : 'Student')}
+                          </span>
+                          <span className="text-slate-400 text-xs">{app.email || app.student_id || 'No identifier'}</span>
                         </div>
                       </div>
                     </td>
                     <td className="px-5 py-4">
-                      {student.has_application ? (
-                        <Badge variant="status" status={student.application_status || 'pending'}>
-                          {student.application_status}
-                        </Badge>
-                      ) : (
-                        <span className="text-xs text-slate-500 bg-slate-700/50 px-2 py-1 rounded-lg">
-                          No application
-                        </span>
-                      )}
+                      <span className="text-slate-300 text-sm whitespace-nowrap">{app.academic_stream || '—'}</span>
+                    </td>
+                    <td className="px-5 py-4">
+                      <span className="text-slate-300 text-sm">{app.preferred_course || '—'}</span>
+                    </td>
+                    <td className="px-5 py-4">
+                      <Badge variant="status" status={app.status || 'pending'}>
+                        {app.status || 'pending'}
+                      </Badge>
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-1.5">
                         <FileText className="h-3.5 w-3.5 text-blue-400" />
-                        <span className="text-white text-sm">{student.documents_count}</span>
+                        <span className="text-white text-sm">{app.documents_count}</span>
                       </div>
                     </td>
                     <td className="px-5 py-4">
-                      <div className="flex items-center gap-1.5">
-                        <MessageSquare className="h-3.5 w-3.5 text-emerald-400" />
-                        <span className="text-white text-sm">{student.chat_messages_count}</span>
-                      </div>
-                    </td>
-                    <td className="px-5 py-4">
-                      <span className="text-slate-400 text-xs whitespace-nowrap">{formatDate(student.created_at)}</span>
+                      <span className="text-slate-400 text-xs whitespace-nowrap">{formatDate(app.created_at)}</span>
                     </td>
                     <td className="px-5 py-4">
                       <span className="text-slate-400 text-xs whitespace-nowrap">
-                        {student.last_login_at ? (
-                          isOnline(student.last_login_at) ? (
-                            <span className="text-emerald-400">Online</span>
-                          ) : (
-                            formatDateTime(student.last_login_at)
-                          )
-                        ) : (
-                          'Never'
-                        )}
+                        {formatDateTime(app.created_at)}
                       </span>
                     </td>
                     <td className="px-5 py-4 whitespace-nowrap">
-                      <Button 
+                      <Button
                         size="sm"
-                        onClick={(e) => processStudent(e, student)}
-                        loading={processingId === student.id}
-                        disabled={student.documents_count === 0}
+                        onClick={(e) => processApplication(e, app)}
+                        loading={processingId === app.id}
+                        disabled={app.documents_count === 0 || !app.student_id}
                         className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-xs px-3 py-1.5 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Cog className="w-3 h-3" />

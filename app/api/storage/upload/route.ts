@@ -43,11 +43,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'docType and file are required' }, { status: 400 })
     }
 
-    const filePath = `${user.id}/${docType}`
+    const fileNameParts = file.name.split('.')
+    const extension = fileNameParts.length > 1 ? fileNameParts[fileNameParts.length - 1].toLowerCase() : ''
+    const filePath = extension ? `${user.id}/${docType}.${extension}` : `${user.id}/${docType}`
 
     const { error: uploadError } = await supabase.storage
       .from(STUDENT_DOCUMENTS_BUCKET)
-      .upload(filePath, file, { upsert: true })
+      .upload(filePath, file, { upsert: true, contentType: file.type || undefined })
 
     if (uploadError) {
       return NextResponse.json({ error: uploadError.message }, { status: 400 })

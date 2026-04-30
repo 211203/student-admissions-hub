@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
+import { createClient } from '@/lib/supabase/client'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useAuth } from '@/lib/hooks/useAuth'
@@ -37,6 +38,7 @@ export default function ApplyPage() {
   const [loading, setLoading] = useState(false)
   const [checkingApplication, setCheckingApplication] = useState(true)
   const [mounted, setMounted] = useState(false)
+  const [alreadyApplied, setAlreadyApplied] = useState(false)
 
   const { register, handleSubmit, watch, formState: { errors }, reset } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -56,28 +58,8 @@ export default function ApplyPage() {
 
   useEffect(() => {
     if (!mounted || authLoading) return
-    
-    // Check if there's a pending application in session storage
-    const pending = sessionStorage.getItem('pendingApplication')
-    if (pending) {
-      try {
-        const data = JSON.parse(pending)
-        reset({
-          fullName: data.student_name || '',
-          email: data.student_email || '',
-          phone: data.student_phone || '',
-          preferredCourse: data.preferred_course || '',
-          academicStream: data.academic_stream || '',
-          preferredIntakeYear: data.preferred_intake_year || '',
-          questions: data.questions || '',
-        })
-      } catch {
-        // ignore parse errors
-      }
-    }
-    
     setCheckingApplication(false)
-  }, [mounted, authLoading, reset])
+  }, [mounted, authLoading])
 
   const getRequiredExams = (stream: string) => {
     const examMap: Record<string, string[]> = {
@@ -90,33 +72,135 @@ export default function ApplyPage() {
 
   const onSubmit = async (data: FormData) => {
     setLoading(true)
-    
+
     try {
-      if (!user) { 
+      if (!user) {
         toast.error('Please login first')
-        return 
+        return
       }
 
-      // Store form data in sessionStorage for documents page to use
-      const applicationData = {
+      if (alreadyApplied) {
+        toast.error('You have already submitted your application.')
+        return
+      }
+
+      const supabase = createClient()
+      const { error: profileError } = await supabase.from('student_profiles').upsert(
+        {
+          id: user.id,
+          full_name: data.fullName,
+          email: data.email,
+          phone: data.phone,
+        },
+        { onConflict: 'id' }
+      )
+
+      if (profileError) {
+        throw new Error(`Failed to save student profile: ${profileError.message}`)
+      }
+
+      const { data: profileRow, error: profileFetchError } = await supabase
+        .from('student_profiles')
+        .select('id')
+        .eq('id', user.id)
+        .maybeSingle()
+
+      if (profileFetchError) {
+        throw new Error(`Failed to verify student profile: ${profileFetchError.message}`)
+      }
+
+      if (!profileRow) {
+        const { error: profileInsertError } = await supabase.from('student_profiles').insert({
+          id: user.id,
+          full_name: data.fullName,
+          email: data.email,
+          phone: data.phone,
+        })
+
+        if (profileInsertError) {
+          throw new Error(`Failed to create student profile: ${profileInsertError.message}`)
+        }
+      }
+
+      const applicationInsert = {
         student_id: user.id,
         student_name: data.fullName,
         student_email: data.email,
-        student_phone: data.phone || null,
+        student_phone: data.phone,
         preferred_course: data.preferredCourse,
         academic_stream: data.academicStream,
-        preferred_intake_year: data.preferredIntakeYear || null,
-        questions: data.questions || null,
+        preferred_intake_year: data.preferredIntakeYear,
+        student_questions: data.questions || '',
+        status: 'pending',
       }
-      
-      sessionStorage.setItem('pendingApplication', JSON.stringify(applicationData))
-      
-      toast.success('Proceeding to document upload...')
+
+      let { error: applicationError } = await supabase.from('applications').insert(applicationInsert)
+
+      if (applicationError?.message?.includes('applications_student_id_fkey')) {
+        await supabase.from('profiles').upsert(
+          {
+            id: user.id,
+            full_name: data.fullName,
+            email: data.email,
+            role: 'student',
+          },
+          { onConflict: 'id' }
+        )
+
+        const retry = await supabase.from('applications').insert(applicationInsert)
+        applicationError = retry.error
+      }
+
+      if (applicationError) {
+        throw new Error(`Failed to save application: ${applicationError.message}`)
+      }
+
+      const payload = {
+        studentId: user.id,
+        student_name: data.fullName,
+        student_email: data.email,
+        student_phone: data.phone,
+        fullName: data.fullName,
+        email: data.email,
+        phone: data.phone,
+        preferredCourse: data.preferredCourse,
+        academicStream: data.academicStream,
+        preferredIntakeYear: data.preferredIntakeYear,
+        student_questions: data.questions || '',
+        questions: data.questions || '',
+        timestamp: new Date().toISOString(),
+      }
+
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000)
+      let res: Response
+      try {
+        res = await fetch('/api/webhook/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ webhook: 'application', ...payload }),
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timeoutId)
+      }
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        throw new Error(text || 'Failed to submit application')
+      }
+
+      setAlreadyApplied(true)
+      toast.success('Application submitted! Proceed to document upload.')
       router.push('/student/documents')
-      
     } catch (err: unknown) {
-      console.error('[apply] Error:', err)
-      toast.error('Something went wrong. Please try again.')
+      const message =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'Application submission timed out. Please try again.'
+          : err instanceof Error
+            ? err.message
+            : 'Something went wrong. Please try again.'
+      toast.error(message)
     } finally {
       setLoading(false)
     }
@@ -210,6 +294,7 @@ export default function ApplyPage() {
           <Button
             type="submit"
             loading={loading}
+            disabled={alreadyApplied}
             size="lg"
             className="gap-2"
           >
